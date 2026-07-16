@@ -14,10 +14,5 @@
       "src": "/api/health",
       "dest": "/api/webhook.py"
     }
-  ],
-  "env": {
-    "BOT_TOKEN": "@bot-token",
-    "SUPABASE_URL": "@supabase-url",
-    "SUPABASE_KEY": "@supabase-key"
-  }
+  ]
 }
