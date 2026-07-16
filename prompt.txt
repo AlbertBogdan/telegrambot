@@ -1,0 +1,288 @@
+# Agent Prompt — Telegram BJU Bot with Hard Auto-Correction ("nutribot")
+
+## ROLE
+You are an autonomous coding agent operating in an act → verify → iterate loop. You implement the task below, surface your reasoning in `<thinking>` and your final result in `<answer>` so evaluators can read both, and stop only when the FINAL SELF-REVIEW CHECKLIST passes or you hit a blocker requiring human input.
+
+---
+
+## TASK
+- Build a Telegram bot (`pyTelegramBotAPI` + Flask webhook) that logs daily protein/fat/carb (Б/Ж/У) intake — accepting either direct eaten-grams input or weight+БЖУ-per-100g product input — and enforces a hard daily calorie ceiling via nutrient-compensation.
+- Implement Supabase/PostgreSQL persistence for `users` and `daily_log`, including the 06:00 Europe/Minsk day-rollover.
+- Implement the `/start` onboarding flow that captures a new user's daily Б/Ж/У norms and writes the profile.
+- Implement the three interface buttons: "📈 Сегодня", "📅 Календарь" (full month calendar), "⚙️ Изменить норму".
+- Ship a `src`-layout, typed, ruff/mypy/pytest-clean project deployable as a Vercel serverless function, with SKILL.md-driven verification passing end to end.
+
+---
+
+## LOOP TYPE SELECTION
+- TURN-BASED / LITE (default): single task, agent verifies itself via SKILL.md checks, human reviews result.
+- **GOAL-BASED (/goal): SELECTED** — this is a multi-file, multi-layer build (domain logic, storage, bot handlers, serverless entrypoint) with a deterministic stop condition (ruff/mypy/pytest all green + all SKILL.md checks pass). A single turn is unlikely to converge; iteration with a hard ceiling is required.
+- TIME-BASED / PROACTIVE: not applicable — no recurring/polling work.
+
+Selected: **GOAL-BASED** — multi-layer build, deterministic gate (lint/type/test), needs iteration.
+
+---
+
+## HARD CONSTRAINTS
+```
+SCOPE          Never modify files outside the project root.
+PATHS          Always use absolute paths, never relative — the agent may change working directory mid-loop.
+RETRY          On tool-call failure, adjust approach; never repeat the exact same failed call. Max 2 retries per action.
+BUDGET         Stop and report BLOCKED if 3 consecutive tool calls fail.
+MAX-ITER       Never exceed 15 iterations or ~60k tokens total, whichever comes first.
+CONTEXT-RESET  If the same error has been "fixed" twice without success, STOP patching. Report BLOCKED with a summary of failed approaches.
+UNCERTAINTY    If the spec is ambiguous or required data is missing, explicitly say so in <thinking> and in the final report. Never silently assume — a stated assumption is fine, a hidden one is not.
+STATE          Persist progress to STATE.md after each step; do not rely on chat history between iterations.
+REVIEW         Do not add features, abstractions, or changes beyond the spec.
+```
+
+**Pre-flagged UNCERTAINTY (do not silently resolve — implement the documented default below and note it in the final report):**
+1. The spec's worked UI example ("Б: 5г, У: 30г, 1470/1740") does not arithmetically reconcile with any single obvious proportional-split rule. Implement the algorithm specified in FUNCTIONALITY → "Compensation calculator" below as the documented default, write unit tests against *that* algorithm's own outputs (not against the spec's example numbers), and note in the final report that the example in the source ТЗ appears illustrative rather than exact.
+2. New-user onboarding: confirmed — bot asks for norms via `/start` (see Onboarding feature). Re-sending `/start` for an already-onboarded user must not silently overwrite data; route it through the same confirmation step as "⚙️ Изменить норму".
+3. Rounding: display grams and kcal rounded to 1 decimal place unless a whole gram; do not round internal accumulators (store/compute in `Decimal` or `float` with full precision, round only at render time). State this as the chosen default.
+4. Macro-logging input has two accepted formats, disambiguated purely by token count — confirmed: (a) exactly 3 numbers = direct eaten Б/Ж/У in grams (unchanged from the original ТЗ), (b) exactly 4 numbers, order `вес(г) Б_на_100г Ж_на_100г У_на_100г` = a product entry, converted to eaten grams before being added to the day's totals. No product name is captured — numbers only. Any other token count is a format error listing both accepted patterns.
+
+---
+
+## ENVIRONMENT / TECH REQUIREMENTS
+- Language: Python 3.10+
+- Package manager: **uv** (uv.lock committed, `uv run` for all commands)
+- Lint: **ruff** (`uv run ruff check .` → 0 errors)
+- Types: **mypy** strict mode (`uv run mypy src/` → 0 errors)
+- Tests: **pytest** (`uv run pytest -q`)
+- Structure: `src/` modular layout, OOP where it models real entities (UserProfile, DailyLog), pure functions for the calculator
+- Libraries: `pyTelegramBotAPI` (Telebot), `Flask` (webhook handling), `supabase-py` (DB access) — do not add psycopg2 unless supabase-py proves insufficient; document the choice if you deviate
+- Deploy target: Vercel Serverless Functions (`api/webhook.py` entrypoint); no persistent disk — all state in Supabase
+- Timezone: `Europe/Minsk` via `zoneinfo` (stdlib) — do not add `pytz` unless zoneinfo is unavailable in the target runtime
+
+---
+
+## FUNCTIONALITY
+
+### Onboarding (`/start`)
+- Normal behaviour: new `user_id` sends `/start` → bot replies asking for norms in "Б Ж У" format (one line, space-separated) → user replies `120 60 250` → bot upserts `users` row, confirms with the numbers echoed back and shows the main menu (📈/📅/⚙️).
+- Edge case 1: user in onboarding state sends anything that isn't exactly 3 positive numbers → bot replies with a specific format error and stays in the onboarding state; no DB write.
+- Edge case 2: an already-onboarded user sends `/start` again → bot shows current norms and asks for confirmation before overwriting (reuses the "⚙️ Изменить норму" flow); it must never silently overwrite.
+- Acceptance: see SKILL.md step 3.
+
+### Macro logging (free-text numeric message — two accepted formats)
+- Format A — direct eaten grams: exactly **3** numbers = `Б Ж У` already eaten (e.g. `20 10 40`).
+- Format B — product entry: exactly **4** numbers, order `вес(г) Б_на_100г Ж_на_100г У_на_100г` (e.g. `150 20 5 30` = 150 g of a product with 20/5/30 g of Б/Ж/У per 100 g). The bot converts this to eaten grams via `factor = вес / 100; eaten_x = per100_x * factor` for each nutrient **before** anything else happens — from that point on Format B is handled identically to Format A (same rollover check, same compensation calculator, same reply).
+- The two formats are disambiguated purely by counting whitespace-separated tokens; no keyword or prefix is required.
+- Normal behaviour: user sends a valid Format A or Format B message while not in onboarding/edit state → bot performs the 06:00-Minsk rollover check (see below), computes eaten grams (identity for Format A, weight-scaled for Format B), adds them to today's `daily_log` totals, runs the compensation calculator, and replies with the "📈 Сегодня"-style status.
+- Edge case 1: message is not exactly 3 or exactly 4 numeric tokens → reject with a human-readable error that shows both accepted patterns; no DB write.
+- Edge case 2 (Format A): any of the 3 tokens is negative → reject; no DB write.
+- Edge case 3 (Format B): `вес <= 0` → reject ("вес должен быть больше нуля"); any of the three per-100g values is negative → reject; a per-100g value of `0` is valid (e.g. a fat-free product) and must not be rejected.
+- Edge case 4: `kcal_fact >= kcal_norm` **before** this message is processed (i.e., the limit was already exhausted by a prior entry) → bot blocks the addition entirely (regardless of which format was used) and replies "Лимит калорий на сегодня исчерпан!"; no DB write. (An entry that itself crosses the threshold is still recorded — the block applies to the *next* attempt, per ТЗ §3.6.)
+- Acceptance: see SKILL.md step 1 (conversion function) and step 4 (integration flow, both formats).
+
+### Day rollover (06:00 Europe/Minsk)
+- Normal behaviour: on every incoming request, compute current Minsk time; if it's past 06:00 and the most recent `daily_log` row for the user has `date` < today's Minsk date, archive it (leave as historical row) and create a fresh zeroed row for today before processing the request.
+- Edge case 1: request arrives between 00:00–06:00 Minsk → the "current day" is still the previous calendar date; no rollover.
+- Edge case 2: bot has been idle for multiple days → rollover only ever creates one new row for "today"; it does not backfill missing days.
+- Acceptance: see SKILL.md step 5.
+
+### Product-to-grams conversion (pure function, no I/O)
+- Signature: `convert_product_to_macros(weight_g: float, b_per_100: float, j_per_100: float, u_per_100: float) -> MacroTotals`.
+- `factor = weight_g / 100`; `eaten_b = b_per_100 * factor`, `eaten_j = j_per_100 * factor`, `eaten_u = u_per_100 * factor`.
+- Precondition (enforced by the caller in `handlers.py`, not inside this pure function): `weight_g > 0` and `b_per_100, j_per_100, u_per_100 >= 0`. This function itself assumes valid input and does no I/O or Telegram-specific error handling — validation/rejection happens in the handler before calling it.
+- Edge case 1: `weight_g` very small (e.g. `1`) → still computes correctly (`factor = 0.01`), no special-casing.
+- Edge case 2: a `per_100` value of `0` → resulting eaten grams for that nutrient is `0`, which is valid and distinct from "missing/invalid".
+- The output of this function is fed into the same `daily_log` accumulation and `compensate()` call used for Format A — this function only produces the grams-eaten numbers, it does not touch totals or run compensation itself.
+- Acceptance: see SKILL.md step 1.
+
+### Compensation calculator (pure function, no I/O)
+- Inputs: `norm_b, norm_j, norm_u` (grams), `fact_b, fact_j, fact_u` (grams, cumulative for the day).
+- `kcal_norm = norm_b*4 + norm_j*9 + norm_u*4`; `kcal_fact = fact_b*4 + fact_j*9 + fact_u*4`.
+- A nutrient is "exceeded" if `fact_x > norm_x`.
+- `excess_kcal = Σ (fact_x - norm_x) * kcal_per_gram_x` over exceeded nutrients only.
+- `non_exceeded = nutrients where fact_x <= norm_x`.
+- `raw_remaining_kcal = Σ (norm_x - fact_x) * kcal_per_gram_x` over `non_exceeded`.
+- `budget_for_non_exceeded = raw_remaining_kcal - excess_kcal`.
+- If `budget_for_non_exceeded <= 0`: every non-exceeded nutrient's displayed remaining grams = 0, and the day is treated as calorie-exhausted (next logging attempt is blocked per the rule above).
+- Else: `scale = budget_for_non_exceeded / raw_remaining_kcal`; each non-exceeded nutrient's remaining grams = `((norm_x - fact_x) * kcal_per_gram_x * scale) / kcal_per_gram_x`.
+- Confirmed business rule: when two of three nutrients are exceeded simultaneously, the single remaining non-exceeded nutrient absorbs 100% of the compensation (this falls out of the formula automatically — it is not a special case).
+- Edge case 1: all three nutrients exceeded → no non-exceeded nutrient exists; remaining = 0g for all, day blocked.
+- Edge case 2: no nutrient exceeded → `scale` will be ≥ 1 only if `budget_for_non_exceeded >= raw_remaining_kcal`, which is always true when `excess_kcal == 0`; remaining grams equal the raw `norm_x - fact_x` unchanged.
+- Acceptance: see SKILL.md step 1 and step 2.
+
+### "📈 Сегодня" view
+- Normal behaviour: renders eaten vs. norm per nutrient, flags any exceeded nutrient with "(ПЕРЕБОР!)", shows the compensated remaining grams for non-exceeded nutrients, and shows `kcal_fact/kcal_norm`.
+- Edge case: day calorie-exhausted → still render the breakdown, but remaining grams shown as 0 for all, plus the exhaustion message.
+- Acceptance: see SKILL.md step 2.
+
+### "📅 Календарь" view (full month calendar)
+- Normal behaviour: inline keyboard showing the current month as a calendar grid; days with a `daily_log` entry are visually distinguishable (e.g., a filled marker) from days without one; month navigation via "◀" / "▶" buttons; tapping a day with data shows that day's final Б/Ж/У/kcal totals.
+- Edge case 1: tapping a day with no log data → bot replies that no data exists for that date, does not crash.
+- Edge case 2: navigating to a month with zero entries → calendar still renders (all days un-marked), navigation still works.
+- Acceptance: see SKILL.md step 6.
+
+### "⚙️ Изменить норму"
+- Normal behaviour: puts the bot into an edit-state waiting for 3 numbers; on receipt, upserts `users.norm_b/norm_j/norm_u`; does **not** touch `daily_log`.
+- Edge case: same format validation as onboarding (edge case 1 there) — invalid input keeps the user in edit-state with an error, no partial write.
+- Acceptance: see SKILL.md step 3.
+
+---
+
+## SKILL.md — VERIFICATION PROTOCOL
+*(This section becomes the SKILL.md file the agent creates at step 1. This is the SINGLE source of truth for verification — do not restate these checks anywhere else, only reference the step numbers.)*
+
+```
+---
+name: verify-nutribot
+description: Verify the BJU Telegram bot end-to-end before declaring done.
+---
+# Verification steps
+Never declare the task complete based on a successful edit alone.
+Verify the way a human reviewer would:
+
+1. uv run pytest tests/domain/test_calculator.py -q
+   → all green; covers: no-overage case, single-nutrient overage,
+     two-nutrient-overage (carbs absorbs, per confirmed rule),
+     three-nutrient overage (fully blocked), zero-remaining edge,
+     AND convert_product_to_macros() — normal weight, weight=1,
+     a per-100g value of 0, and factor scaling correctness
+     (e.g. 150g @ 20/5/30 per 100g → 30/7.5/45 eaten grams).
+2. uv run pytest tests/bot/test_formatters.py -q
+   → all green; "Сегодня" view renders exceeded-nutrient flags and
+     exhaustion message correctly for fixture data.
+3. uv run pytest tests/bot/test_onboarding_and_edit.py -q
+   → all green; covers valid onboarding, malformed input rejection,
+     re-/start on existing user routes to confirmation, edit-norm flow.
+4. uv run pytest tests/bot/test_logging_flow.py -q
+   → all green; covers: Format A (3-number direct) valid add, Format B
+     (4-number weight+per100) valid add with correct conversion,
+     wrong token count (not 3 and not 4) rejected with both patterns
+     shown, negative Format-A values rejected, Format-B weight<=0
+     rejected, Format-B per-100 value of 0 accepted, add blocked
+     when kcal_fact already >= kcal_norm regardless of format used.
+5. uv run pytest tests/domain/test_rollover.py -q
+   → all green; covers pre-06:00 vs post-06:00 Minsk boundary, no
+     rollover mid-day, no backfill across multi-day idle gaps.
+6. uv run pytest tests/bot/test_calendar.py -q
+   → all green; covers empty-month render, marked vs unmarked days,
+     tap-on-empty-day handling.
+7. uv run ruff check .
+   → 0 errors
+8. uv run mypy src/
+   → 0 errors
+9. uv run pytest -q (full suite)
+   → all green, no step above skipped
+
+If any step fails: fix the issue and rerun from step 1.
+Do not hand back partially verified work.
+```
+
+---
+
+## ARCHITECTURE & CODE QUALITY
+
+### Layer split for this project
+```
+src/nutribot/
+  config.py              # env vars: BOT_TOKEN, SUPABASE_URL, SUPABASE_KEY, TIMEZONE
+  domain/
+    models.py            # UserProfile, DailyLog, MacroTotals (dataclasses)
+    calculator.py        # pure functions: kcal(), compensate(), is_day_exhausted(), convert_product_to_macros()
+    rollover.py           # pure function: needs_rollover(now, last_log_date) -> bool
+  storage/
+    repository.py        # Protocol interface + SupabaseRepository implementation
+  bot/
+    handlers.py           # Telebot message/callback handlers (thin — delegate to domain); includes the
+                           # 3-vs-4-token input parser that routes to Format A (direct) or Format B
+                           # (product weight+per-100g, via convert_product_to_macros()) before validation
+    keyboards.py           # inline keyboard builders (main menu, calendar grid)
+    formatters.py          # render domain results into Telegram message text
+    states.py              # onboarding/edit-norm state machine
+  api/
+    webhook.py             # Vercel entrypoint: Flask app, POST /api/webhook
+tests/
+  domain/ ...
+  bot/ ...
+```
+No God-objects. No cross-layer calls (handlers never touch Supabase directly — always through `storage.repository`; domain layer has zero I/O and zero Telegram imports).
+
+### Type safety
+All public interfaces typed. No `any`/`object` without a justification comment on the same line. `storage.repository` defined as a `Protocol` so domain/tests can use an in-memory fake instead of live Supabase.
+
+### Error handling
+Catch at the boundary where the error first occurs (parsing in `handlers.py`, DB errors in `repository.py`). User-facing: human-readable Telegram reply. Internal: structured log with context (user_id, action). No uncaught exceptions that crash the Flask process — the webhook handler must return 200 even on internal errors (Telegram retries on non-200), after logging.
+
+### Idempotency
+- `users` upsert on `user_id` (onboarding and norm-edit) — enforced via `ON CONFLICT (user_id) DO UPDATE`.
+- Day rollover — enforced via a `(user_id, date)` unique constraint on `daily_log`; rollover creation must be `INSERT ... ON CONFLICT DO NOTHING` so a duplicate webhook retry never creates two rows for the same day.
+- Macro-add — Telegram may redeliver the same webhook update; use the Telegram `update_id` (or message `message_id`) as a dedup key stored alongside the log write, or make the add handler check-then-act inside a single DB transaction.
+
+### Context budget
+- Offload large tool outputs (test logs, migration SQL) to files; read summaries, not raw dumps.
+- Use low-effort mode for read-only/directory-listing steps.
+- Delegate the SQL schema migration file generation as one discrete step rather than re-deriving it each iteration.
+
+---
+
+## PLAN OF WORK (research → plan → act → verify → iterate)
+
+**Step 0. RESEARCH (mandatory, separate from planning)**
+Check for any existing project files in the working directory. If none, this is greenfield — record that in `<thinking>` and proceed. If existing code is found, read it fully before proposing any change, and flag any contradiction with this spec under UNCERTAINTY before proceeding.
+
+Before writing any code, create `SKILL.md` (verbatim from the section above) and output an inline PLAN block listing what you will build, in what order, and known risks/unknowns — informed by Step 0.
+
+**/goal**: `uv run ruff check .` → 0 errors AND `uv run mypy src/` → 0 errors AND `uv run pytest -q` → 100% pass (all SKILL.md steps 1–9 green). Stop after 15 tries (≤ MAX-ITER).
+
+**State**: save progress to `STATE.md` after each pass (files created so far, which SKILL.md steps currently pass/fail, open UNCERTAINTY items).
+
+**Evaluator note**: surface full ruff/mypy/pytest output in `<answer>` so the evaluator can read it — it cannot run commands itself.
+
+Suggested iteration order (adjust based on Step 0 findings):
+1. Scaffold `uv init`, `pyproject.toml` deps, `src/nutribot` package skeleton, `SKILL.md`.
+2. `domain/models.py` + `domain/calculator.py` + `domain/rollover.py`, fully unit-tested in isolation (no I/O) → SKILL.md steps 1, 5.
+3. `storage/repository.py` (Protocol + Supabase impl + in-memory fake for tests) + SQL migration for `users`/`daily_log`.
+4. `bot/states.py`, `bot/formatters.py`, `bot/keyboards.py` → SKILL.md steps 2, 6.
+5. `bot/handlers.py` wiring onboarding, macro logging, calendar, edit-norm → SKILL.md steps 3, 4.
+6. `api/webhook.py` Vercel entrypoint + `config.py`.
+7. Run full SKILL.md top-to-bottom (steps 1–9); fix and rerun until green.
+
+---
+
+## TOKEN & MODEL MANAGEMENT
+*(Include only if the orchestrator running this loop supports dynamic model selection; otherwise skip this section without blocking the run.)*
+- Scaffolding, boilerplate, and repeated lint/type-fix passes → smaller/faster model if configurable.
+- The compensation-calculator logic and the rollover boundary logic (judgment-heavy, correctness-critical) → most capable model.
+- Write the SQL migration and pytest fixtures once as scripts; reuse them across iterations instead of re-deriving each time.
+- Monitor turn count and token spend against MAX-ITER (15 iterations / ~60k tokens).
+
+---
+
+## SECOND-AGENT REVIEW
+*(Included: multi-file, architectural change touching money-adjacent calculation logic and persistent user data.)*
+After implementation, before the final checklist:
+- Spawn a reviewer subagent with fresh context.
+- Reviewer role: "You are a strict code reviewer. You do not make changes. Check the diff against this spec and the SKILL.md results, then reply PASS or FAIL with reasons."
+- Reviewer must specifically confirm: (a) the compensation formula matches the documented algorithm exactly, (b) the two-nutrient-exceeded case correctly gives 100% of remaining budget to the single non-exceeded nutrient, (c) idempotency guarantees hold for rollover and upsert paths, (d) no domain-layer file imports Telegram or Supabase modules.
+- Reviewer model: smaller/faster model is sufficient — it only reads, does not implement.
+
+---
+
+## DOCUMENTATION (parallel, not at the end)
+Update in parallel with code — never at the end:
+- `README.md`: setup (`uv sync`), running locally (`vercel dev` or Flask dev server), required env vars (`BOT_TOKEN`, `SUPABASE_URL`, `SUPABASE_KEY`), how to set the Telegram webhook, known limitations (e.g., single-day rollover only, no multi-day backfill).
+- Inline comments: only where the compensation math or the rollover boundary condition is non-obvious.
+- `SKILL.md`: update if a new verification step is discovered during implementation.
+
+---
+
+## FINAL SELF-REVIEW CHECKLIST
+Run before declaring done. Wrap this check in `<thinking>`, final verdict in `<answer>`. If any item fails → fix it, then re-run from that item.
+
+- [ ] All SKILL.md steps 1–9 pass (output shown in `<answer>`)
+- [ ] No untyped public interfaces without a justification comment
+- [ ] No uncaught exceptions reachable through normal usage; webhook always returns 200
+- [ ] All idempotent operations tested (users upsert, daily_log rollover insert, macro-add dedup)
+- [ ] No files modified outside project root; all paths absolute
+- [ ] README updated and accurate
+- [ ] No features added beyond the spec (e.g., no partial-week calendar fallback — full month calendar only, per confirmed answer)
+- [ ] STATE.md reflects final state
+- [ ] No CONTEXT-RESET trigger hit without being reported
+- [ ] Every pre-flagged UNCERTAINTY item is documented as resolved-by-assumption, not silently resolved
+- [ ] If BLOCKED hit anywhere → documented with: tool/command | exact error | what human must do
+- [ ] Reviewer subagent replied PASS
