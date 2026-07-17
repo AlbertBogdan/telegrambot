@@ -391,10 +391,13 @@ class NutribotHandlers:
     def _cb_today(
         self, call: CallbackQuery, user_id: int, chat_id: int
     ) -> None:
+        # Answer immediately — spinner stops, content arrives when ready
+        self.bot.answer_callback_query(call.id)
+
         profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
-            self.bot.answer_callback_query(
-                call.id, "Сначала настройте бота командой /start"
+            self.bot.send_message(
+                chat_id, "Сначала настройте бота командой /start"
             )
             return
 
@@ -410,24 +413,28 @@ class NutribotHandlers:
         self.bot.send_message(
             chat_id, format_today(profile, log, comp), parse_mode="Markdown"
         )
-        self.bot.answer_callback_query(call.id)
 
     def _cb_calendar(
         self, call: CallbackQuery, user_id: int, chat_id: int
     ) -> None:
+        # Answer immediately — spinner stops, calendar updates when ready
+        self.bot.answer_callback_query(call.id)
+
         now = datetime.now()
         today = minsk_today(now)
         year, month = today.year, today.month
         self._send_calendar(chat_id, user_id, year, month)
-        self.bot.answer_callback_query(call.id)
 
     def _cb_edit_norm(
         self, call: CallbackQuery, user_id: int, chat_id: int
     ) -> None:
+        # Answer immediately — spinner stops, prompt arrives when ready
+        self.bot.answer_callback_query(call.id)
+
         profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
-            self.bot.answer_callback_query(
-                call.id, "Сначала настройте бота командой /start"
+            self.bot.send_message(
+                chat_id, "Сначала настройте бота командой /start"
             )
             return
 
@@ -437,11 +444,13 @@ class NutribotHandlers:
             format_edit_norm_prompt(profile),
             parse_mode="Markdown",
         )
-        self.bot.answer_callback_query(call.id)
 
     def _cb_calendar_nav(
         self, call: CallbackQuery, user_id: int, chat_id: int, data: str
     ) -> None:
+        # Answer immediately — spinner stops, keyboard updates when ready
+        self.bot.answer_callback_query(call.id)
+
         parts = data.split("_")
         year = int(parts[2])
         month = int(parts[3])
@@ -462,11 +471,13 @@ class NutribotHandlers:
             self._send_calendar(
                 chat_id, user_id, year, month, call.message.message_id
             )
-        self.bot.answer_callback_query(call.id)
 
     def _cb_calendar_day(
         self, call: CallbackQuery, user_id: int, chat_id: int, data: str
     ) -> None:
+        # Answer immediately — spinner stops, day detail arrives when ready
+        self.bot.answer_callback_query(call.id)
+
         parts = data.split("_")
         year = int(parts[2])
         month = int(parts[3])
@@ -487,7 +498,6 @@ class NutribotHandlers:
                 format_day_detail(log, total_kcal),
                 parse_mode="Markdown",
             )
-        self.bot.answer_callback_query(call.id)
 
     # ------------------------------------------------------------------
     # Helpers
