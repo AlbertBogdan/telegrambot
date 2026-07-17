@@ -59,6 +59,18 @@ class NutribotHandlers:
         def handle_help(message: Message) -> None:
             self._on_help(message)
 
+        @bot.message_handler(commands=["today"])
+        def handle_today_cmd(message: Message) -> None:
+            self._cmd_today(message)
+
+        @bot.message_handler(commands=["calendar"])
+        def handle_calendar_cmd(message: Message) -> None:
+            self._cmd_calendar(message)
+
+        @bot.message_handler(commands=["edit"])
+        def handle_edit_cmd(message: Message) -> None:
+            self._cmd_edit(message)
+
         @bot.message_handler(
             func=lambda m: True, content_types=["text"]
         )
@@ -110,17 +122,71 @@ class NutribotHandlers:
                 "  _Пример:_ `20 10 40`\n"
                 "• `Вес Б Ж У` — четыре числа (вес продукта + Б/Ж/У на 100г)\n"
                 "  _Пример:_ `150 20 5 30`\n\n"
-                "*Кнопки главного меню:*\n"
-                "📈 *Сегодня* — сколько съедено и сколько осталось\n"
-                "📅 *Календарь* — история по дням за весь месяц\n"
-                "⚙️ *Изменить норму* — обновить дневные нормы Б/Ж/У\n\n"
                 "*Команды:*\n"
-                "/start — начать или перенастроить нормы\n"
-                "/help — это сообщение\n\n"
+                "/today — 📈 Сегодня (сколько съедено и осталось)\n"
+                "/calendar — 📅 Календарь (история по дням)\n"
+                "/edit — ⚙️ Изменить дневные нормы Б/Ж/У\n"
+                "/start — 🔄 Перенастроить нормы\n"
+                "/help — ❓ Это сообщение\n\n"
                 "⚠️ Бот считает калории (Б×4 + Ж×9 + У×4) и "
                 "автоматически уменьшает остаток, если вы превысили "
                 "норму по одному из нутриентов."
             ),
+            parse_mode="Markdown",
+        )
+
+    # ------------------------------------------------------------------
+    # /today, /calendar, /edit — same as inline keyboard buttons
+    # ------------------------------------------------------------------
+
+    def _cmd_today(self, message: Message) -> None:
+        if message.from_user is None:
+            return
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        profile = asyncio.run(self.repo.get_user(user_id))
+        if profile is None:
+            self.bot.send_message(
+                chat_id, "Сначала настройте бота командой /start"
+            )
+            return
+        today = minsk_today()
+        log = asyncio.run(self.repo.get_log(user_id, today))
+        if log is None:
+            log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
+        comp = compensate(
+            profile.norm_b, profile.norm_j, profile.norm_u,
+            log.totals.b, log.totals.j, log.totals.u,
+        )
+        self.bot.send_message(
+            chat_id, format_today(profile, log, comp), parse_mode="Markdown"
+        )
+
+    def _cmd_calendar(self, message: Message) -> None:
+        if message.from_user is None:
+            return
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        now = datetime.now()
+        today = minsk_today(now)
+        year, month = today.year, today.month
+        self._send_calendar(chat_id, user_id, year, month)
+
+    def _cmd_edit(self, message: Message) -> None:
+        if message.from_user is None:
+            return
+        user_id = message.from_user.id
+        chat_id = message.chat.id
+        profile = asyncio.run(self.repo.get_user(user_id))
+        if profile is None:
+            self.bot.send_message(
+                chat_id, "Сначала настройте бота командой /start"
+            )
+            return
+        self.states.set(user_id, State.AWAITING_EDIT_NORM)
+        self.bot.send_message(
+            chat_id,
+            format_edit_norm_prompt(profile),
             parse_mode="Markdown",
         )
 

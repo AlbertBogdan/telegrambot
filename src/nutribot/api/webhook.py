@@ -37,8 +37,11 @@ handlers = NutribotHandlers(bot, repo)
 # Register bot commands for the Telegram side panel (runs once per cold start)
 try:
     bot.set_my_commands([
-        telebot.types.BotCommand("/start", "Начать или перенастроить нормы БЖУ"),
-        telebot.types.BotCommand("/help", "Как пользоваться ботом"),
+        telebot.types.BotCommand("/today", "📈 Сколько съедено и сколько осталось"),
+        telebot.types.BotCommand("/calendar", "📅 История по дням за весь месяц"),
+        telebot.types.BotCommand("/edit", "⚙️ Обновить дневные нормы Б/Ж/У"),
+        telebot.types.BotCommand("/start", "🔄 Перенастроить нормы"),
+        telebot.types.BotCommand("/help", "❓ Как пользоваться ботом"),
     ])
 except Exception:
     logger.exception("Failed to set bot commands")
