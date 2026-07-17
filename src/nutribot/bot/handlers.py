@@ -351,20 +351,29 @@ class NutribotHandlers:
         user_id = call.from_user.id
         chat_id = call.message.chat.id if call.message else user_id
 
-        if data == "today":
-            self._cb_today(call, user_id, chat_id)
-        elif data == "calendar":
-            self._cb_calendar(call, user_id, chat_id)
-        elif data == "edit_norm":
-            self._cb_edit_norm(call, user_id, chat_id)
-        elif data.startswith("cal_nav_"):
-            self._cb_calendar_nav(call, user_id, chat_id, data)
-        elif data.startswith("cal_day_"):
-            self._cb_calendar_day(call, user_id, chat_id, data)
-        elif data == "cal_noop":
-            self.bot.answer_callback_query(call.id)
-        else:
-            self.bot.answer_callback_query(call.id)
+        try:
+            if data == "today":
+                self._cb_today(call, user_id, chat_id)
+            elif data == "calendar":
+                self._cb_calendar(call, user_id, chat_id)
+            elif data == "edit_norm":
+                self._cb_edit_norm(call, user_id, chat_id)
+            elif data.startswith("cal_nav_"):
+                self._cb_calendar_nav(call, user_id, chat_id, data)
+            elif data.startswith("cal_day_"):
+                self._cb_calendar_day(call, user_id, chat_id, data)
+            elif data == "cal_noop":
+                self.bot.answer_callback_query(call.id)
+            else:
+                self.bot.answer_callback_query(call.id)
+        except Exception:
+            logger.exception("Error in callback handler for data=%s", data)
+            try:
+                self.bot.answer_callback_query(
+                    call.id, "❌ Произошла ошибка. Попробуйте позже."
+                )
+            except Exception:
+                pass
 
     def _cb_today(
         self, call: CallbackQuery, user_id: int, chat_id: int
