@@ -126,6 +126,56 @@ class SupabaseRepository:
             logger.error("Supabase upsert %s request failed: %s", table, e)
             return False
 
+    async def _insert_or_update(
+        self, table: str, match: dict[str, object], data: dict[str, object],
+    ) -> bool:
+        """Insert a new row, or update if a matching row already exists."""
+        headers_no_prefer = dict(self._headers)
+        del headers_no_prefer["Prefer"]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                # 1. Check if row exists
+                params = "&".join(
+                    f"{k}=eq.{v}" for k, v in match.items()
+                )
+                get_url = f"{self._url}/rest/v1/{table}?select=id&{params}"
+                get_resp = await client.get(get_url, headers=headers_no_prefer)
+                rows = get_resp.json() if get_resp.status_code == 200 else []
+                if rows:
+                    # 2. Update existing row by id
+                    row_id = rows[0]["id"]
+                    patch_url = f"{self._url}/rest/v1/{table}?id=eq.{row_id}"
+                    patch_headers = dict(headers_no_prefer)
+                    patch_headers["Prefer"] = "return=minimal"
+                    patch_resp = await client.patch(
+                        patch_url, headers=patch_headers, content=_json.dumps(data),
+                    )
+                    if patch_resp.status_code not in (200, 204):
+                        logger.error(
+                            "Supabase PATCH %s failed: HTTP %s body=%s",
+                            table, patch_resp.status_code, patch_resp.text[:500],
+                        )
+                        return False
+                else:
+                    # 3. Insert new row
+                    ins_headers = dict(headers_no_prefer)
+                    ins_headers["Prefer"] = "return=minimal"
+                    post_resp = await client.post(
+                        f"{self._url}/rest/v1/{table}",
+                        headers=ins_headers,
+                        content=_json.dumps(data),
+                    )
+                    if post_resp.status_code not in (200, 201):
+                        logger.error(
+                            "Supabase INSERT %s failed: HTTP %s body=%s",
+                            table, post_resp.status_code, post_resp.text[:500],
+                        )
+                        return False
+                return True
+        except httpx.HTTPError as e:
+            logger.error("Supabase insert-or-update %s failed: %s", table, e)
+            return False
+
     async def get_user(self, user_id: int) -> UserProfile | None:
         try:
             res = (
@@ -147,7 +197,6 @@ class SupabaseRepository:
             norm_b=float(data["norm_b"]),
             norm_j=float(data["norm_j"]),
             norm_u=float(data["norm_u"]),
-            onboarded=bool(data.get("onboarded", True)),
         )
 
     async def upsert_user(
@@ -158,7 +207,6 @@ class SupabaseRepository:
             "norm_b": norm_b,
             "norm_j": norm_j,
             "norm_u": norm_u,
-            "onboarded": True,
         }, on_conflict="user_id")
         if not ok:
             raise RuntimeError(
@@ -201,13 +249,15 @@ class SupabaseRepository:
     async def upsert_log(
         self, user_id: int, log_date: date, totals: MacroTotals
     ) -> DailyLog:
-        ok = await self._upsert("daily_log", {
+        match: dict[str, object] = {"user_id": user_id, "date": log_date.isoformat()}
+        data: dict[str, object] = {
             "user_id": user_id,
             "date": log_date.isoformat(),
             "total_b": totals.b,
             "total_j": totals.j,
             "total_u": totals.u,
-        }, on_conflict="user_id,date")
+        }
+        ok = await self._insert_or_update("daily_log", match, data)
         if not ok:
             raise RuntimeError(
                 "Не удалось сохранить запись. Проверьте настройки Supabase."
