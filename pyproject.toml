@@ -53,6 +53,9 @@ module = [
 ]
 disable_error_code = ["no-untyped-call", "union-attr", "index", "arg-type", "call-overload", "untyped-decorator"]
 
+[tool.vercel]
+entrypoint = "api.webhook:app"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
