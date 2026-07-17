@@ -46,6 +46,22 @@ try:
 except Exception:
     logger.exception("Failed to set bot commands")
 
+# Ensure webhook is configured to receive callback_query updates.
+# Without this, inline keyboard button presses are silently dropped by Telegram.
+try:
+    info = bot.get_webhook_info()
+    if info.url:
+        bot.set_webhook(
+            url=info.url,
+            allowed_updates=["message", "edited_message", "callback_query"],
+            drop_pending_updates=False,
+        )
+        logger.info("Webhook updated: allowed_updates includes callback_query")
+    else:
+        logger.warning("No webhook URL set — callback queries may not be delivered")
+except Exception:
+    logger.exception("Failed to update webhook allowed_updates")
+
 
 @app.route("/api/webhook", methods=["POST"])
 def webhook() -> tuple[str, int]:
