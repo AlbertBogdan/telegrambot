@@ -107,6 +107,8 @@ class SupabaseRepository:
             )
         except APIError:
             return None
+        if res is None:
+            return None
         data = res.data
         if data is None:
             return None
@@ -121,16 +123,22 @@ class SupabaseRepository:
     async def upsert_user(
         self, user_id: int, norm_b: float, norm_j: float, norm_u: float
     ) -> UserProfile:
-        self._client.table("users").upsert(
-            {
-                "user_id": user_id,
-                "norm_b": norm_b,
-                "norm_j": norm_j,
-                "norm_u": norm_u,
-                "onboarded": True,
-            },
-            on_conflict="user_id",
-        ).execute()
+        res = (
+            self._client.table("users")
+            .upsert(
+                {
+                    "user_id": user_id,
+                    "norm_b": norm_b,
+                    "norm_j": norm_j,
+                    "norm_u": norm_u,
+                    "onboarded": True,
+                },
+                on_conflict="user_id",
+            )
+            .execute()
+        )
+        if res is None:
+            raise RuntimeError("Supabase upsert_user returned None")
         return UserProfile(
             user_id=user_id, norm_b=norm_b, norm_j=norm_j, norm_u=norm_u
         )
@@ -146,6 +154,8 @@ class SupabaseRepository:
                 .execute()
             )
         except APIError:
+            return None
+        if res is None:
             return None
         data = res.data
         if data is None:
@@ -163,16 +173,22 @@ class SupabaseRepository:
     async def upsert_log(
         self, user_id: int, log_date: date, totals: MacroTotals
     ) -> DailyLog:
-        self._client.table("daily_log").upsert(
-            {
-                "user_id": user_id,
-                "date": log_date.isoformat(),
-                "total_b": totals.b,
-                "total_j": totals.j,
-                "total_u": totals.u,
-            },
-            on_conflict="user_id,date",
-        ).execute()
+        res = (
+            self._client.table("daily_log")
+            .upsert(
+                {
+                    "user_id": user_id,
+                    "date": log_date.isoformat(),
+                    "total_b": totals.b,
+                    "total_j": totals.j,
+                    "total_u": totals.u,
+                },
+                on_conflict="user_id,date",
+            )
+            .execute()
+        )
+        if res is None:
+            raise RuntimeError("Supabase upsert_log returned None")
         return DailyLog(user_id=user_id, date=log_date, totals=totals)
 
     async def get_logs_for_month(
@@ -195,6 +211,8 @@ class SupabaseRepository:
                 .execute()
             )
         except APIError:
+            return []
+        if res is None:
             return []
         result: list[DailyLog] = []
         for row in res.data or []:
