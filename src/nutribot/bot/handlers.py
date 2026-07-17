@@ -226,7 +226,16 @@ class NutribotHandlers:
             self.bot.send_message(message.chat.id, format_negative_error())
             return
 
-        profile = asyncio.run(self.repo.upsert_user(user_id, b, j, u))
+        try:
+            profile = asyncio.run(self.repo.upsert_user(user_id, b, j, u))
+        except RuntimeError:
+            logger.exception("Failed to upsert user %s", user_id)
+            self.bot.send_message(
+                message.chat.id,
+                "❌ Не удалось сохранить данные. "
+                "Проверьте подключение к базе данных и попробуйте позже.",
+            )
+            return
         self.states.clear(user_id)
 
         if state == State.AWAITING_ONBOARDING:
@@ -285,43 +294,51 @@ class NutribotHandlers:
             self.bot.send_message(message.chat.id, format_input_error())
             return
 
-        # Rollover check
-        now = datetime.now()
-        today = minsk_today(now)
-        last_log = asyncio.run(self.repo.get_log(user_id, today))
-        if last_log is None:
-            last_date = self._get_last_log_date(user_id)
-            if needs_rollover(now, last_date):
+        # Rollover check + persist (wrapped: don't silently lose data)
+        try:
+            now = datetime.now()
+            today = minsk_today(now)
+            last_log = asyncio.run(self.repo.get_log(user_id, today))
+            if last_log is None:
+                last_date = self._get_last_log_date(user_id)
+                if needs_rollover(now, last_date):
+                    asyncio.run(self.repo.upsert_log(user_id, today, MacroTotals()))
+                    last_log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
+
+            if last_log is None:
                 asyncio.run(self.repo.upsert_log(user_id, today, MacroTotals()))
-                last_log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
+                current = MacroTotals()
+            else:
+                current = last_log.totals
 
-        if last_log is None:
-            asyncio.run(self.repo.upsert_log(user_id, today, MacroTotals()))
-            current = MacroTotals()
-        else:
-            current = last_log.totals
+            # Check if day already exhausted
+            if is_day_exhausted(
+                profile.norm_b, profile.norm_j, profile.norm_u,
+                current.b, current.j, current.u,
+            ):
+                self.bot.send_message(message.chat.id, format_limit_exhausted())
+                return
 
-        # Check if day already exhausted
-        if is_day_exhausted(
-            profile.norm_b, profile.norm_j, profile.norm_u,
-            current.b, current.j, current.u,
-        ):
-            self.bot.send_message(message.chat.id, format_limit_exhausted())
-            return
+            # Add eaten to current totals
+            new_totals = current + eaten
 
-        # Add eaten to current totals
-        new_totals = current + eaten
+            # Persist
+            log = asyncio.run(self.repo.upsert_log(user_id, today, new_totals))
 
-        # Persist
-        log = asyncio.run(self.repo.upsert_log(user_id, today, new_totals))
-
-        # Compensate and render
-        comp = compensate(
-            profile.norm_b, profile.norm_j, profile.norm_u,
-            log.totals.b, log.totals.j, log.totals.u,
-        )
-        reply = format_today(profile, log, comp)
-        self.bot.send_message(message.chat.id, reply, parse_mode="Markdown")
+            # Compensate and render
+            comp = compensate(
+                profile.norm_b, profile.norm_j, profile.norm_u,
+                log.totals.b, log.totals.j, log.totals.u,
+            )
+            reply = format_today(profile, log, comp)
+            self.bot.send_message(message.chat.id, reply, parse_mode="Markdown")
+        except RuntimeError:
+            logger.exception("Failed to save macro log for user %s", user_id)
+            self.bot.send_message(
+                message.chat.id,
+                "❌ Не удалось сохранить запись. "
+                "Проверьте подключение к базе данных и попробуйте позже.",
+            )
 
     # ------------------------------------------------------------------
     # Callback queries (today, calendar, edit_norm, calendar nav/day)
