@@ -57,6 +57,23 @@ def webhook() -> tuple[str, int]:
     try:
         json_data = request.get_json(force=True)
         update = telebot.types.Update.de_json(json_data)
+
+        # Log update type for debugging
+        if update.message:
+            logger.info(
+                "Update: message from %s, text=%s",
+                update.message.from_user.id if update.message.from_user else "?",
+                update.message.text[:50] if update.message.text else "(no text)",
+            )
+        elif update.callback_query:
+            logger.info(
+                "Update: callback_query from %s, data=%s",
+                update.callback_query.from_user.id if update.callback_query.from_user else "?",
+                update.callback_query.data,
+            )
+        else:
+            logger.info("Update: other type, update_id=%s", update.update_id)
+
         bot.process_new_updates([update])
     except Exception:
         logger.exception("Error processing webhook update")
