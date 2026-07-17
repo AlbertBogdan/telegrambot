@@ -55,6 +55,10 @@ class NutribotHandlers:
         def handle_start(message: Message) -> None:
             self._on_start(message)
 
+        @bot.message_handler(commands=["help"])
+        def handle_help(message: Message) -> None:
+            self._on_help(message)
+
         @bot.message_handler(
             func=lambda m: True, content_types=["text"]
         )
@@ -91,6 +95,34 @@ class NutribotHandlers:
                 parse_mode="Markdown",
             )
             self.states.set(user_id, State.AWAITING_ONBOARDING)
+
+    # ------------------------------------------------------------------
+    # /help
+    # ------------------------------------------------------------------
+
+    def _on_help(self, message: Message) -> None:
+        self.bot.send_message(
+            message.chat.id,
+            (
+                "🍎 *Nutribot — трекер БЖУ*\n\n"
+                "*Как записывать питание:*\n"
+                "• `Б Ж У` — три числа через пробел (граммы, которые съели)\n"
+                "  _Пример:_ `20 10 40`\n"
+                "• `Вес Б Ж У` — четыре числа (вес продукта + Б/Ж/У на 100г)\n"
+                "  _Пример:_ `150 20 5 30`\n\n"
+                "*Кнопки главного меню:*\n"
+                "📈 *Сегодня* — сколько съедено и сколько осталось\n"
+                "📅 *Календарь* — история по дням за весь месяц\n"
+                "⚙️ *Изменить норму* — обновить дневные нормы Б/Ж/У\n\n"
+                "*Команды:*\n"
+                "/start — начать или перенастроить нормы\n"
+                "/help — это сообщение\n\n"
+                "⚠️ Бот считает калории (Б×4 + Ж×9 + У×4) и "
+                "автоматически уменьшает остаток, если вы превысили "
+                "норму по одному из нутриентов."
+            ),
+            parse_mode="Markdown",
+        )
 
     # ------------------------------------------------------------------
     # Text messages (macro logging, onboarding/edit-norm input)

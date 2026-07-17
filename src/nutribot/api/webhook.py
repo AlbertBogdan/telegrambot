@@ -34,6 +34,15 @@ repo = SupabaseRepository(SUPABASE_URL, SUPABASE_KEY)
 # Register handlers
 handlers = NutribotHandlers(bot, repo)
 
+# Register bot commands for the Telegram side panel (runs once per cold start)
+try:
+    bot.set_my_commands([
+        telebot.types.BotCommand("/start", "Начать или перенастроить нормы БЖУ"),
+        telebot.types.BotCommand("/help", "Как пользоваться ботом"),
+    ])
+except Exception:
+    logger.exception("Failed to set bot commands")
+
 
 @app.route("/api/webhook", methods=["POST"])
 def webhook() -> tuple[str, int]:
