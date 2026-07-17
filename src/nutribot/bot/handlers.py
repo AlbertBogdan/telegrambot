@@ -5,6 +5,7 @@ for persistence. No handler touches Supabase directly.
 """
 
 import asyncio
+import concurrent.futures
 import logging
 from datetime import date, datetime, timedelta
 
@@ -92,7 +93,7 @@ class NutribotHandlers:
         if self.states.is_awaiting_input(user_id):
             return
 
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is not None and profile.onboarded:
             self.bot.send_message(
                 message.chat.id,
@@ -144,14 +145,14 @@ class NutribotHandlers:
             return
         user_id = message.from_user.id
         chat_id = message.chat.id
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
             self.bot.send_message(
                 chat_id, "Сначала настройте бота командой /start"
             )
             return
         today = minsk_today()
-        log = asyncio.run(self.repo.get_log(user_id, today))
+        log = self._run_async(self.repo.get_log(user_id, today))
         if log is None:
             log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
         comp = compensate(
@@ -177,7 +178,7 @@ class NutribotHandlers:
             return
         user_id = message.from_user.id
         chat_id = message.chat.id
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
             self.bot.send_message(
                 chat_id, "Сначала настройте бота командой /start"
@@ -227,7 +228,7 @@ class NutribotHandlers:
             return
 
         try:
-            profile = asyncio.run(self.repo.upsert_user(user_id, b, j, u))
+            profile = self._run_async(self.repo.upsert_user(user_id, b, j, u))
         except RuntimeError:
             logger.exception("Failed to upsert user %s", user_id)
             self.bot.send_message(
@@ -257,7 +258,7 @@ class NutribotHandlers:
         text = message.text.strip()
 
         # Fetch user profile
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
             self.bot.send_message(
                 message.chat.id,
@@ -298,15 +299,15 @@ class NutribotHandlers:
         try:
             now = datetime.now()
             today = minsk_today(now)
-            last_log = asyncio.run(self.repo.get_log(user_id, today))
+            last_log = self._run_async(self.repo.get_log(user_id, today))
             if last_log is None:
                 last_date = self._get_last_log_date(user_id)
                 if needs_rollover(now, last_date):
-                    asyncio.run(self.repo.upsert_log(user_id, today, MacroTotals()))
+                    self._run_async(self.repo.upsert_log(user_id, today, MacroTotals()))
                     last_log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
 
             if last_log is None:
-                asyncio.run(self.repo.upsert_log(user_id, today, MacroTotals()))
+                self._run_async(self.repo.upsert_log(user_id, today, MacroTotals()))
                 current = MacroTotals()
             else:
                 current = last_log.totals
@@ -323,7 +324,7 @@ class NutribotHandlers:
             new_totals = current + eaten
 
             # Persist
-            log = asyncio.run(self.repo.upsert_log(user_id, today, new_totals))
+            log = self._run_async(self.repo.upsert_log(user_id, today, new_totals))
 
             # Compensate and render
             comp = compensate(
@@ -345,11 +346,23 @@ class NutribotHandlers:
     # ------------------------------------------------------------------
 
     def _on_callback(self, call: CallbackQuery) -> None:
+        # Always answer the callback query — Telegram requires it,
+        # otherwise the client shows an indefinite spinner.
         if call.data is None or call.from_user is None:
+            try:
+                self.bot.answer_callback_query(call.id)
+            except Exception:
+                pass
             return
+
         data = call.data
         user_id = call.from_user.id
-        chat_id = call.message.chat.id if call.message else user_id
+        try:
+            chat_id = call.message.chat.id if call.message else user_id
+        except Exception:
+            chat_id = user_id
+
+        logger.info("Callback received: data=%s, user_id=%s", data, user_id)
 
         try:
             if data == "today":
@@ -378,7 +391,7 @@ class NutribotHandlers:
     def _cb_today(
         self, call: CallbackQuery, user_id: int, chat_id: int
     ) -> None:
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
             self.bot.answer_callback_query(
                 call.id, "Сначала настройте бота командой /start"
@@ -386,7 +399,7 @@ class NutribotHandlers:
             return
 
         today = minsk_today()
-        log = asyncio.run(self.repo.get_log(user_id, today))
+        log = self._run_async(self.repo.get_log(user_id, today))
         if log is None:
             log = DailyLog(user_id=user_id, date=today, totals=MacroTotals())
 
@@ -411,7 +424,7 @@ class NutribotHandlers:
     def _cb_edit_norm(
         self, call: CallbackQuery, user_id: int, chat_id: int
     ) -> None:
-        profile = asyncio.run(self.repo.get_user(user_id))
+        profile = self._run_async(self.repo.get_user(user_id))
         if profile is None:
             self.bot.answer_callback_query(
                 call.id, "Сначала настройте бота командой /start"
@@ -460,7 +473,7 @@ class NutribotHandlers:
         day = int(parts[4])
         day_date = date(year, month, day)
 
-        log = asyncio.run(self.repo.get_log(user_id, day_date))
+        log = self._run_async(self.repo.get_log(user_id, day_date))
         if log is None:
             self.bot.send_message(
                 chat_id,
@@ -479,6 +492,25 @@ class NutribotHandlers:
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _run_async(coro):
+        """Run an async coroutine from sync code, handling existing event loops.
+
+        On Vercel's Python 3.12 runtime an event loop may already be running
+        in the WSGI thread.  ``asyncio.run()`` would raise ``RuntimeError``
+        in that case, so we detect it and fall back to a thread-pool executor.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run()
+            return asyncio.run(coro)
+
+        # An event loop is already running.  Bridge via a fresh thread.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(asyncio.run, coro)
+            return future.result()
 
     @staticmethod
     def _parse_three_numbers(text: str) -> tuple[float, float, float] | None:
@@ -528,7 +560,7 @@ class NutribotHandlers:
         today = minsk_today()
         for days_back in range(1, 32):
             check_date = today - timedelta(days=days_back)
-            log = asyncio.run(self.repo.get_log(user_id, check_date))
+            log = self._run_async(self.repo.get_log(user_id, check_date))
             if log is not None:
                 return check_date
         return None
@@ -541,7 +573,7 @@ class NutribotHandlers:
         month: int,
         edit_message_id: int | None = None,
     ) -> None:
-        logs = asyncio.run(self.repo.get_logs_for_month(user_id, year, month))
+        logs = self._run_async(self.repo.get_logs_for_month(user_id, year, month))
         days_with_data = {log.date.day for log in logs}
         kb = calendar_keyboard(year, month, days_with_data)
 
